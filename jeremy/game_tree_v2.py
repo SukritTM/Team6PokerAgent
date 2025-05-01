@@ -12,7 +12,7 @@ from colorama import Fore, Style
 
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
+logging.basicConfig(level=logging.DEBUG, format='[%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
 
 @dataclass
@@ -158,7 +158,7 @@ def simulate_game(path: Path) -> Tuple[Set[Action], List[Path]]:
         return action
 
     def result_cb(winners: List[Seat], hand_info: HandInfo, round_state: RoundState) -> None:
-        logger.info(f"Result: {round_state}")
+        logger.debug(f"Result: {round_state}")
 
     class PathPlayer(TypedPokerPlayer):
         def declare_action(self, valid_actions: List[ActionOption], hole_card: List[CardString], round_state: RoundState) -> Action:
@@ -277,6 +277,7 @@ def main():
     logger.info("Starting game tree simulation...")
     visited: Dict[Path, Set[Action]] = {}
     stack: List[Path] = [()]
+    terminal_nodes: List[Path] = []
 
     while stack:
         logger.debug(f"Stack size: {len(stack)}")
@@ -286,13 +287,20 @@ def main():
         visited[path] = set()
         logger.info(f"Exploring path: {path}")
         actions, children = simulate_game(path)
+        if len(children) == 0:
+            terminal_nodes.append(path)
         visited[path] = actions
         for child in children:
             if child in visited:
                 continue
             stack.append(child)
 
-
+    print(f"Visited paths: {len(visited)}")
+    print(f"Terminal nodes: {len(terminal_nodes)}")
+    for path in terminal_nodes:
+        print(path)
+    print(f"Visited paths: {len(visited)}")
+    print(f"Terminal nodes: {len(terminal_nodes)}")
 
 
     # explore([], tree_root)
