@@ -4,6 +4,40 @@ from random import shuffle, choice as rchoice
 import pprint
 from pypokerengine.engine.hand_evaluator import HandEvaluator
 from pypokerengine.engine.card import Card
+import math
+
+class RunningStats:
+    def __init__(self):
+        self.n = 0
+        self.mean = 0.0
+        self.M2 = 0.0
+        self.M3 = 0.0
+
+    def update(self, x):
+        self.n += 1
+        delta = x - self.mean
+        delta_n = delta / self.n
+        delta_n2 = delta_n * delta_n
+        term1 = delta * delta_n * (self.n - 1)
+
+        # Update mean
+        self.mean += delta_n
+
+        # Update M3 and M2
+        self.M3 += (term1 * delta_n * (self.n - 2)) - (3 * delta_n * self.M2)
+        self.M2 += term1
+
+    def get_mean(self):
+        return self.mean
+
+    def get_variance(self):
+        return self.M2 / (self.n - 1) if self.n > 1 else float('nan')
+
+    def get_skewness(self):
+        if self.n < 3 or self.M2 == 0:
+            return float('nan')
+        return (self.n ** 0.5) * self.M3 / (self.M2 ** 1.5)
+
 
 class MCSPlayer(BasePokerPlayer):
   
@@ -69,14 +103,18 @@ class MCSPlayer(BasePokerPlayer):
         # print(self.street)
 
         actions = [a['action'] for a in valid_actions]
-        scores  = {'fold': 0, 'raise': 0, 'call': 0}
+        scores  = {'fold': 0, 'raise': 0, 'call': 0} # mean
+        M2s     = {'fold': 0, 'raise': 0, 'call': 0} # squared mean difference
+        sd2     = {'fold': 0, 'raise': 0, 'call': 0} # variance
+        skew    = {'fold': 0, 'raise': 0, 'call': 0}
+        runningstats = {'fold': RunningStats(), 'call': RunningStats(), 'raise': RunningStats()}
         # print(actions)
         # print(actions)
 
-        num_simulations = 1000
+        num_simulations = 500
         for action in actions:
             if action == 'fold':
-                scores[action] -= oldpot
+                scores[action] -= oldpot/num_simulations
                 continue
             
             if self.imsmallblind:
@@ -93,7 +131,7 @@ class MCSPlayer(BasePokerPlayer):
                     sbet_trial = smallblind_bet
                     bbet_trial = bigblind_bet
 
-
+                n = 0
                 for i in range(num_simulations):
                     winner, payout = self.run_montecarlo_simulation(
                         current_street=street,
@@ -107,11 +145,20 @@ class MCSPlayer(BasePokerPlayer):
                         braisecount=self.getraisecounts(round_state['action_histories'], 'bigblind'),
                         pot=pot
                     )
-
+                    n += 1
                     if winner == 'smallblind':
-                        scores[action] += payout
+                        U = payout
                     else:
-                        scores[action] -= payout
+                        U = -payout
+
+                    delta = U - scores[action]
+                    scores[action] += delta/n
+                    if action != 'fold':
+                        delta2 = U - scores[action]
+                        M2s[action] += delta * delta2
+                
+                if action != 'fold':
+                    sd2[action] = M2s[action] / (num_simulations - 1)
 
                     
             else:
@@ -128,6 +175,7 @@ class MCSPlayer(BasePokerPlayer):
                     bbet_trial = bigblind_bet
                     sbet_trial = smallblind_bet
 
+                n = 0
                 for i in range(num_simulations):
                     winner, payout = self.run_montecarlo_simulation(
                         current_street=street,
@@ -141,19 +189,47 @@ class MCSPlayer(BasePokerPlayer):
                         braisecount=self.getraisecounts(round_state['action_histories'], 'bigblind'),
                         pot=pot
                     )
-
+                    
+                    n += 1
                     if winner == 'bigblind':
-                        scores[action] += payout
+                        U = payout
                     else:
-                        scores[action] -= payout
+                        U = -payout
+                    
+                    delta = U - scores[action]
+                    scores[action] += delta/n
+
+                    if action != 'fold':
+                        delta2 = U - scores[action]
+                        M2s[action] += delta * delta2
+                
+                if action != 'fold':
+                    sd2[action] = M2s[action] / (num_simulations - 1)
 
         # print(f'simulation time: {timer}')    
         # exit(0)
         # print(scores)
 
-        # get action with max score
-        k = list(scores.keys())
-        v = list(scores.values())
+        # discount scores by variance
+        discount_factor = 0.001
+        discounted_scores = {'fold': 0, 'raise': 0, 'call': 0}
+        for action in discounted_scores.keys():
+            try:
+                discounted_scores[action] = scores[action] - discount_factor*math.sqrt(sd2[action])
+            except ValueError:
+                # discounted_scores[action] = scores[action]
+                discounted_scores[action] = scores[action]
+                # print(sd2, M2s, action, end = ' ')
+                # for action in M2s.keys():
+                #     print(M2s[action]/499, end=' ')
+                # print()
+
+        # print(scores)
+        # print(discounted_scores)
+
+        # get action with max discounted score
+        k = list(discounted_scores.keys())
+        v = list(discounted_scores.values())
         m = max(v)
         best_action = k[v.index(m)]
 
