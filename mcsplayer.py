@@ -39,6 +39,7 @@ class MCSPlayer(BasePokerPlayer):
         shistory = [item['action'].lower() for item in smallblind_history]
         bhistory = [item['action'].lower() for item in bigblind_history]
 
+        oldpot = pot
         try:
             pot -= history[-1]['amount']
         except IndexError:
@@ -72,9 +73,11 @@ class MCSPlayer(BasePokerPlayer):
         # print(actions)
         # print(actions)
 
-        num_simulations = 100000
-        # timer = pf()
+        num_simulations = 1000
         for action in actions:
+            if action == 'fold':
+                scores[action] -= oldpot
+                continue
             
             if self.imsmallblind:
                 my_history_trial = shistory + [action]
@@ -89,6 +92,7 @@ class MCSPlayer(BasePokerPlayer):
                 if action == 'fold':
                     sbet_trial = smallblind_bet
                     bbet_trial = bigblind_bet
+
 
                 for i in range(num_simulations):
                     winner, payout = self.run_montecarlo_simulation(
@@ -108,6 +112,7 @@ class MCSPlayer(BasePokerPlayer):
                         scores[action] += payout
                     else:
                         scores[action] -= payout
+
                     
             else:
                 my_history_trial = bhistory + [action]
@@ -142,7 +147,6 @@ class MCSPlayer(BasePokerPlayer):
                     else:
                         scores[action] -= payout
 
-        # timer = pf() - timer
         # print(f'simulation time: {timer}')    
         # exit(0)
         # print(scores)
@@ -187,6 +191,7 @@ class MCSPlayer(BasePokerPlayer):
 
 
     def receive_game_start_message(self, game_info):
+        #   print(game_info)
           pass
 
     def receive_round_start_message(self, round_count, hole_card, seats):
@@ -229,14 +234,18 @@ class MCSPlayer(BasePokerPlayer):
             streets_to_simulate.pop(0)
 
         # sample cards
+        t = pf()
         samp = get_sample_card_draw(hole_cards, community_cards)
         opponent_hole, remaining_community_cards = samp[:2], samp[2:]
         community_sample = community_cards + remaining_community_cards
+        t = pf() - t
+        # print('card time', t)
         # debug
         # print(f'my hole: {hole_cards}')
         # print(f'generated opponent hole: {opponent_hole}')
         # print(f'generated community: {community_sample}')
 
+        t = pf()
         for street in streets_to_simulate:
             
             # debug
@@ -278,13 +287,16 @@ class MCSPlayer(BasePokerPlayer):
                 pot += street_result[2]
 
                 winner = 'smallblind' if who_won == 0 else 'bigblind'
+                # t = pf() - t
+                # print('street time', t)
                 return winner, pot
 
             # game did not end, process street result and move on
             pot += street_result[1]
             sraisecount = street_result[4]
             braisecount = street_result[5]
-
+        t = pf() - t
+        # print('street time', t)
         # showdown time!
         if self.imsmallblind:
             winner = self.eval_result(smallblind_hole=hole_cards, bigblind_hole=opponent_hole, community=community_sample)
@@ -386,10 +398,11 @@ def pick_move(moves):
     # else:
     #     raise ValueError('Huh')
 
-    return rchoice(moves)
-    exclude_fold = moves.copy()
-    exclude_fold.remove('fold')
-    return rchoice(exclude_fold)
+    # exclude_fold = moves.copy()
+    # moves.remove('fold')
+    # print(moves)
+    return rchoice(moves[1:])
+    # return rchoice(exclude_fold)
         
 def remove_raise(moves):
     if moves == None:
@@ -434,6 +447,7 @@ def get_valid_street_moves(shistory: list[str], bhistory: list[str], sbet: int, 
         assert False, f'Something wrong here too, whos_turn: {whos_turn}, sbet: {sbet}, bbet: {bbet}, shistory: {shistory}, bhistory: {bhistory}'
 
     allowed = ['fold', 'call', 'raise']
+    # allowed = ['call', 'raise']
     
     current_history = (shistory, bhistory)[whos_turn]
     opponent_history = (shistory, bhistory)[(whos_turn + 1) % 2]
