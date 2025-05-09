@@ -5,46 +5,19 @@ import pprint
 from pypokerengine.engine.hand_evaluator import HandEvaluator
 from pypokerengine.engine.card import Card
 import math
-
-class RunningStats:
-    def __init__(self):
-        self.n = 0
-        self.mean = 0.0
-        self.M2 = 0.0
-        self.M3 = 0.0
-
-    def update(self, x):
-        self.n += 1
-        delta = x - self.mean
-        delta_n = delta / self.n
-        delta_n2 = delta_n * delta_n
-        term1 = delta * delta_n * (self.n - 1)
-
-        # Update mean
-        self.mean += delta_n
-
-        # Update M3 and M2
-        self.M3 += (term1 * delta_n * (self.n - 2)) - (3 * delta_n * self.M2)
-        self.M2 += term1
-
-    def get_mean(self):
-        return self.mean
-
-    def get_variance(self):
-        return self.M2 / (self.n - 1) if self.n > 1 else float('nan')
-
-    def get_skewness(self):
-        if self.n < 3 or self.M2 == 0:
-            return float('nan')
-        return (self.n ** 0.5) * self.M3 / (self.M2 ** 1.5)
+import scipy.stats
+import scipy
+import numpy as np
 
 
 class MCSPlayer(BasePokerPlayer):
   
-    def __init__(self):
+    def __init__(self, raise_ratio = 65/40, call_ratio = 20/80):
         super().__init__()
         self.street = None
         self.imsmallblind = None
+        self.raise_ratio = raise_ratio
+        self.call_ratio = call_ratio
 
     def declare_action(self, valid_actions, hole_card, round_state):
         # print(round_state['action_histories'])
@@ -103,13 +76,19 @@ class MCSPlayer(BasePokerPlayer):
         # print(self.street)
 
         actions = [a['action'] for a in valid_actions]
-        scores  = {'fold': 0, 'raise': 0, 'call': 0} # mean
-        M2s     = {'fold': 0, 'raise': 0, 'call': 0} # squared mean difference
-        sd2     = {'fold': 0, 'raise': 0, 'call': 0} # variance
-        skew    = {'fold': 0, 'raise': 0, 'call': 0}
-        runningstats = {'fold': RunningStats(), 'call': RunningStats(), 'raise': RunningStats()}
+        # actions = ['fold', 'raise', 'call']
+        scores        = {'fold': 0, 'raise': 0, 'call': 0} # mean
+        M2s           = {'fold': 0, 'raise': 0, 'call': 0} # squared mean difference
+        M3s           = {'fold': 0, 'raise': 0, 'call': 0}
+        sd2           = {'fold': 0, 'raise': 0, 'call': 0} # variance
+        skew          = {'fold': 0, 'raise': 0, 'call': 0}
+        winrate       = {'fold': 0, 'raise': 0, 'call': 0}
+        positive_mass = {'fold': 0, 'raise': 0, 'call': 0}
+        negative_mass = {'fold': 0, 'raise': 0, 'call': 0}
+        # runningstats = {'fold': RunningStats(), 'call': RunningStats(), 'raise': RunningStats()}
         # print(actions)
         # print(actions)
+
 
         num_simulations = 500
         for action in actions:
@@ -132,6 +111,8 @@ class MCSPlayer(BasePokerPlayer):
                     bbet_trial = bigblind_bet
 
                 n = 0
+                wins = 0
+                utils = []
                 for i in range(num_simulations):
                     winner, payout = self.run_montecarlo_simulation(
                         current_street=street,
@@ -148,17 +129,51 @@ class MCSPlayer(BasePokerPlayer):
                     n += 1
                     if winner == 'smallblind':
                         U = payout
+                        wins += 1
                     else:
                         U = -payout
+                    
+                    utils.append(U)
 
-                    delta = U - scores[action]
-                    scores[action] += delta/n
-                    if action != 'fold':
-                        delta2 = U - scores[action]
-                        M2s[action] += delta * delta2
+                    
+                    
+
+                    ''' running computation'''
+                #     delta = U - scores[action]
+                #     delta_n = delta/n
+                #     # delta_n2 = (delta_n)*(delta_n)
+                #     term1 = delta * delta_n * (n-1)
+
+                #     scores[action] += delta_n
+
+                #     if action != 'fold':
+                #         # delta2 = U - scores[action]
+                #         M3s[action] += (term1 * delta_n * (n - 2)) - (3*delta_n*M2s[action])
+                #         M2s[action] += term1 # delta * delta2
                 
-                if action != 'fold':
-                    sd2[action] = M2s[action] / (num_simulations - 1)
+                # if action != 'fold':
+                #     sd2[action] = M2s[action] / (num_simulations - 1)
+                #     # print(math.sqrt(sd2[action]), end=' ')
+                #     try:
+                #         skew[action] = math.sqrt(n) * M3s[action] / math.sqrt(M2s[action])**3
+                #         # print(skew[action])
+                #     except ZeroDivisionError as e:
+                #         # print(action, M3s[action], M2s[action], math.sqrt(M2s[action]), math.sqrt(M2s[action])**3)
+                #         # print(utils)
+                #         # raise e
+                #         pass
+                positive_mass[action] = np.array(utils)[np.array(utils) > 0].sum()
+                negative_mass[action] = -np.array(utils)[np.array(utils) <= 0].sum()
+                winrate[action] = wins
+                scores[action] = scipy.stats.moment(utils, order=1, center=0)
+                sd2[action]    = scipy.stats.moment(utils, order=2, center=None)
+
+                if sd2[action] > 0.5:
+                    skew[action]   = scipy.stats.moment(utils, order=3, center=0)#/scipy.stats.moment(utils, order=2, center=0) # raw skew (centerd on 0)
+                
+                # if street == 'river':
+                #     print(utils)
+                #     exit(0)
 
                     
             else:
@@ -176,6 +191,8 @@ class MCSPlayer(BasePokerPlayer):
                     sbet_trial = smallblind_bet
 
                 n = 0
+                utils = []
+                wins = 0
                 for i in range(num_simulations):
                     winner, payout = self.run_montecarlo_simulation(
                         current_street=street,
@@ -193,29 +210,114 @@ class MCSPlayer(BasePokerPlayer):
                     n += 1
                     if winner == 'bigblind':
                         U = payout
+                        wins += 1
                     else:
                         U = -payout
                     
-                    delta = U - scores[action]
-                    scores[action] += delta/n
+                    utils.append(U)
+                    
+                    ''' running computation'''
+                #     delta = U - scores[action]
+                #     delta_n = delta/n
+                #     # delta_n2 = (delta_n)*(delta_n)
+                #     term1 = delta * delta_n * (n-1)
 
-                    if action != 'fold':
-                        delta2 = U - scores[action]
-                        M2s[action] += delta * delta2
+                #     scores[action] += delta_n
+
+                #     if action != 'fold':
+                #         # delta2 = U - scores[action]
+                #         M3s[action] += (term1 * delta_n * (n - 2)) - (3*delta_n*M2s[action])
+                #         M2s[action] += term1 # delta * delta2
                 
-                if action != 'fold':
-                    sd2[action] = M2s[action] / (num_simulations - 1)
+
+                # if action != 'fold':
+                #     sd2[action] = M2s[action] / (num_simulations - 1)
+                #     try:
+                #         skew[action] = math.sqrt(n) * M3s[action] / math.sqrt(M2s[action])**3
+                #     except ZeroDivisionError as e:
+                #         # print(action, M3s[action], M2s[action], math.sqrt(M2s[action]), math.sqrt(M2s[action])**3)
+                #         # print(utils)
+                #         # raise e
+                #         pass
+                positive_mass[action] = np.array(utils)[np.array(utils) > 0].sum()
+                negative_mass[action] = -np.array(utils)[np.array(utils) <= 0].sum()
+                winrate[action] = wins
+                scores[action] = scipy.stats.moment(utils, order=1, center=0)
+                sd2[action]    = scipy.stats.moment(utils, order=2, center=None)
+                if sd2[action] > 0.5:
+                    skew[action]   = scipy.stats.moment(utils, order=3, center=0)/(scipy.stats.moment(utils, order=2, center=0)**(3/2))
 
         # print(f'simulation time: {timer}')    
         # exit(0)
         # print(scores)
 
+        '''mean winrate based'''
+        # mean_winrate = 0
+        # for rates in winrate.values():
+        #     mean_winrate += (rates/num_simulations)
+        
+        # mean_winrate /= len(winrate.values())
+
+        # if mean_winrate > 0.6:
+        #     if 'raise' in actions:
+        #         return 'raise'
+        #     else:
+        #         return 'call'
+        # elif mean_winrate > 0.2:
+        #     return 'call'
+        # else:
+        #     return 'fold'
+
+        '''by-move winrate based'''
+        # if winrate['raise']/num_simulations > 0.6:
+        #     if 'raise' in actions:
+        #         return 'raise'
+        #     else:
+        #         return 'call'
+        # if winrate['call']/num_simulations > 0.2:
+        #     return 'call'
+        # return 'fold'
+
+        '''by-move utility mass'''
+        if negative_mass['raise'] == 0:
+            if 'raise' in actions:
+                return 'raise'
+            else:
+                return 'call'
+        
+        if negative_mass['call'] == 0:
+            return 'call'
+
+        if positive_mass['raise']/negative_mass['raise'] > self.raise_ratio:
+            if 'raise' in actions:
+                return 'raise'
+            else:
+                return 'call'
+        if positive_mass['call']/negative_mass['call'] > self.call_ratio:
+            return 'call'
+        return 'fold'
+
         # discount scores by variance
-        discount_factor = 0.001
-        discounted_scores = {'fold': 0, 'raise': 0, 'call': 0}
+        sd_discount_factor = 0.000
+        skew_discount_factor = 1
+        skew_discount_bias = 0
+        # discounted_scores = {'fold': 0, 'raise': 0, 'call': 0}
+        discounted_scores = {action:0 for action in actions}
         for action in discounted_scores.keys():
             try:
-                discounted_scores[action] = scores[action] - discount_factor*math.sqrt(sd2[action])
+                discounted_scores[action] = scores[action] - sd_discount_factor*math.sqrt(sd2[action]) + skew_discount_factor*(skew[action] + skew_discount_bias)
+                # if action != 'fold':
+                #     discounted_scores[action] = skew[action]
+                #     # print(float(scipy.stats.moment(utils, order=3, center=0)), discounted_scores[action])
+                #     # if math.isnan(discounted_scores[action]):
+                #     #     raise ValueError("NAN!!!!!!")
+                # else:
+                #     discounted_scores[action] = scores[action]
+                
+                # if street == 'river':
+                #     print(action, scores[action], skew[action], discounted_scores[action])
+                # print(action, scores[action], math.sqrt(sd2[action]), skew[action], discounted_scores[action])
+                # print(action, scores[action], math.sqrt(sd2[action]), skew_discount_factor*skew[action])
             except ValueError:
                 # discounted_scores[action] = scores[action]
                 discounted_scores[action] = scores[action]
@@ -474,11 +576,11 @@ def pick_move(moves):
     # else:
     #     raise ValueError('Huh')
 
-    # exclude_fold = moves.copy()
-    # moves.remove('fold')
-    # print(moves)
     return rchoice(moves[1:])
-    # return rchoice(exclude_fold)
+    exclude_fold = moves.copy()
+    moves.remove('fold')
+    # print(moves)
+    return rchoice(exclude_fold)
         
 def remove_raise(moves):
     if moves == None:
